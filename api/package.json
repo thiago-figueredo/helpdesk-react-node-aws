@@ -1,0 +1,38 @@
+{
+  "name": "helpdesk-api",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "jest",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:migrate:test": "dotenv -e .env.test -- prisma migrate deploy",
+    "cdk": "cdk"
+  },
+  "dependencies": {
+    "@aws-sdk/client-eventbridge": "^3.626.0",
+    "@aws-sdk/client-ses": "^3.626.0",
+    "@prisma/client": "^5.18.0",
+    "aws-cdk-lib": "^2.150.0",
+    "bcryptjs": "^2.4.3",
+    "constructs": "^10.3.0",
+    "jsonwebtoken": "^9.0.2",
+    "zod": "^3.23.8",
+    "@yourname/helpdesk-shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.145",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jest": "^29.5.12",
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/node": "^20.14.15",
+    "aws-cdk": "^2.150.0",
+    "dotenv-cli": "^7.4.2",
+    "jest": "^29.7.0",
+    "prisma": "^5.18.0",
+    "ts-jest": "^29.2.4",
+    "typescript": "^5.5.4"
+  }
+}

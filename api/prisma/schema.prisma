@@ -1,0 +1,92 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id            String         @id @default(cuid())
+  name          String
+  slaHours      Int            @default(4)
+  createdAt     DateTime       @default(now())
+  users         User[]
+  tickets       Ticket[]
+  notifications Notification[]
+}
+
+enum Role {
+  admin
+  agent
+}
+
+model User {
+  id              String         @id @default(cuid())
+  tenantId        String
+  tenant          Tenant         @relation(fields: [tenantId], references: [id])
+  email           String
+  passwordHash    String
+  role            Role
+  createdAt       DateTime       @default(now())
+  assignedTickets Ticket[]       @relation("AssignedAgent")
+  notifications   Notification[]
+
+  @@unique([tenantId, email])
+}
+
+enum TicketStatus {
+  Open
+  InProgress
+  WaitingOnCustomer
+  Closed
+}
+
+model Ticket {
+  id               String       @id @default(cuid())
+  tenantId         String
+  tenant           Tenant       @relation(fields: [tenantId], references: [id])
+  assignedAgentId  String?
+  assignedAgent    User?        @relation("AssignedAgent", fields: [assignedAgentId], references: [id])
+  status           TicketStatus @default(Open)
+  trackingToken    String       @unique
+  createdAt        DateTime     @default(now())
+  lastTransitionAt DateTime     @default(now())
+  slaElapsedMs     Int          @default(0)
+  slaBreachedAt    DateTime?
+  messages         Message[]
+
+  @@index([tenantId, status])
+}
+
+enum SenderType {
+  agent
+  customer
+}
+
+model Message {
+  id         String     @id @default(cuid())
+  ticketId   String
+  ticket     Ticket     @relation(fields: [ticketId], references: [id])
+  senderType SenderType
+  body       String
+  createdAt  DateTime   @default(now())
+}
+
+enum NotificationType {
+  new_ticket
+  reply
+  sla_breach
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  tenantId  String
+  tenant    Tenant           @relation(fields: [tenantId], references: [id])
+  userId    String
+  user      User             @relation(fields: [userId], references: [id])
+  type      NotificationType
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+}

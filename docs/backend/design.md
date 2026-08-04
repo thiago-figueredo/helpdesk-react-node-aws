@@ -1,0 +1,123 @@
+# Backend design
+
+Precedes implementation. Covers every API route, the auth model, the Zod contract convention, the Ticket status-transition mechanism, and the Jest integration test plan. Nothing here should be implemented until this doc is confirmed.
+
+Assumes familiarity with `CONTEXT.md` (domain glossary), `PRD.md` (flow/entities), and `docs/adr/` (multi-tenancy, Neon).
+
+## API routes
+
+| Method + path | Lambda | Auth |
+|---|---|---|
+| `POST /auth/signup` | `signup` | Public |
+| `POST /auth/login` | `login` | Public |
+| `POST /tickets` | `create-ticket` | Public |
+| `GET /customers/tickets/:trackingToken` | `get-ticket-by-token` | Public — `trackingToken` validated in-handler |
+| `POST /customers/tickets/:trackingToken/messages` | `reply-to-ticket` (shared) | Public — `trackingToken` validated in-handler |
+| `GET /tickets` | `list-tickets` | JWT + Authorizer |
+| `GET /tickets/:id` | `get-ticket` | JWT + Authorizer |
+| `POST /tickets/:id/claim` | `claim-ticket` | JWT + Authorizer |
+| `POST /tickets/:id/messages` | `reply-to-ticket` (shared) | JWT + Authorizer |
+| `POST /tickets/:id/close` | `close-ticket` | JWT + Authorizer |
+| `POST /agents` | `invite-agent` | JWT + Authorizer, Admin role only |
+| `GET /notifications` | `list-notifications` | JWT + Authorizer |
+| `POST /notifications/:id/read` | `mark-notification-read` | JWT + Authorizer |
+
+Non-HTTP:
+
+| Lambda | Trigger |
+|---|---|
+| `check-sla-breaches` | EventBridge scheduled rule, `rate(15 minutes)` |
+| `send-email-notification` | SQS Email queue |
+| `send-inapp-notification` | SQS In-App queue |
+| `lambda-authorizer` | API Gateway custom authorizer, attached per-route to every JWT-protected route above |
+
+17 Lambdas total.
+
+`reply-to-ticket` is one Lambda backing two routes — it checks whether `event.requestContext.authorizer` is populated (Agent path) or falls back to the `trackingToken` in the path (Customer path), then shares message-creation and status-transition logic either way.
+
+## Authentication & authorization
+
+- **Agent/Admin**: hand-rolled JWT (email/password), verified by `lambda-authorizer`, attached to each protected route individually (no route-prefix grouping).
+- **Customer**: no account. `trackingToken` is a bearer capability for one Ticket, validated inside the handler itself — it never goes through the Authorizer, since it isn't a JWT and carries no claims to verify.
+- **Cross-tenant resource access**: any tenant-scoped lookup by ID (`get-ticket`, `claim-ticket`, `close-ticket`, `reply-to-ticket` Agent path, `mark-notification-read`) that resolves to a different tenant's row returns **404**, not 403 — indistinguishable from not existing, so a response never confirms a given ID belongs to *some* tenant.
+
+## Request/response contracts
+
+One `<Action>RequestSchema` / `<Action>ResponseSchema` Zod pair per route (e.g. `ClaimTicketRequestSchema`), defined in `@yourname/helpdesk-shared`. Handlers parse the incoming body/params through the request schema at the top of the function (reject on failure before touching the DB); the same schemas are imported by `helpdesk-web` for typed API calls, so the contract only has one definition.
+
+## Status-transition logic
+
+Every transition enforces a **strict state guard**: a Lambda only accepts its one documented precondition state and rejects (409) otherwise. No implicit claim-on-reply, no reopening a `Closed` ticket via a stale `trackingToken` link — matches the "no AI/NLP, simple state machine" scope already locked in PRD.md, and keeps every transition testable as a single precondition → postcondition pair.
+
+| Transition | Precondition | Actor |
+|---|---|---|
+| `Open` → `InProgress` | `status = Open` | Agent claims |
+| `InProgress` → `WaitingOnCustomer` | `status = InProgress` | Agent replies |
+| `WaitingOnCustomer` → `InProgress` | `status = WaitingOnCustomer` | Customer replies |
+| `InProgress`/`WaitingOnCustomer` → `Closed` | not already `Closed` | Agent closes |
+
+### Atomic update mechanism
+
+The naive read-then-write (read `Ticket`, compute `wasCountable`/`elapsedSinceLastTransition` in application memory, then write `status` + `lastTransitionAt` + conditional `slaElapsedMs`) is a non-atomic read-modify-write: a concurrent transition on the same Ticket between the read and the write makes the computed elapsed-time wrong, regardless of how the final write is expressed.
+
+Prisma's atomic `increment` alone does **not** fix this — it only atomically computes the new value of `slaElapsedMs` from the DB's current value, but the *decision* of whether to increment at all, and by how much, still depends on `status`/`lastTransitionAt` read earlier into application memory.
+
+**Decision: wrap every status-transition write in a Prisma interactive transaction using `SELECT ... FOR UPDATE`** to lock the row, re-read fresh state under the lock, compute, write, commit:
+
+```ts
+await prisma.$transaction(async (tx) => {
+  const [ticket] = await tx.$queryRaw<Ticket[]>`
+    SELECT * FROM "Ticket" WHERE id = ${id} AND "tenantId" = ${tenantId} FOR UPDATE
+  `;
+  if (!ticket) throw new NotFoundError();
+  if (ticket.status !== expectedStatus) throw new ConflictError();
+
+  const wasCountable = ticket.status === 'Open' || ticket.status === 'InProgress';
+  const elapsedSinceLastTransition = now - ticket.lastTransitionAt;
+
+  await tx.ticket.update({
+    where: { id },
+    data: {
+      status: newStatus,
+      lastTransitionAt: now,
+      slaElapsedMs: wasCountable ? ticket.slaElapsedMs + elapsedSinceLastTransition : ticket.slaElapsedMs,
+    },
+  });
+});
+```
+
+Rejected alternatives: optimistic concurrency (`updateMany` gated on the previously-read `lastTransitionAt`, retry on 0 rows affected) avoids holding a lock but adds retry-loop code for a race that, given single-agent-per-ticket traffic, will essentially never fire; plain `increment` is insufficient per above. Not written up as an ADR — reversible later without much cost, recorded here instead.
+
+## Jest integration test plan
+
+### Test infrastructure
+
+- **Database**: Dockerized Postgres for tests (Neon stays the prod target). Reset via unique, randomized fixtures per test (fresh Tenant/User/Ticket via a `createTestTenant()`-style factory) rather than per-test truncation; one truncate-all in `beforeAll`/`afterAll` per test file.
+- **Invocation**: every Lambda's test imports the handler and calls it directly with a hand-built event object (`APIGatewayProxyEventV2`, `SQSEvent`, or the EventBridge scheduled-event shape, as appropriate) — no API Gateway/SQS emulation.
+- **Auth in tests**: `lambda-authorizer` has its own dedicated suite covering JWT verification. Every other Agent-authenticated Lambda's tests fabricate `event.requestContext.authorizer.lambda` directly with whatever identity the test needs, rather than re-running real JWT verification per test.
+
+### Per-Lambda behaviors
+
+**Auth**
+- `lambda-authorizer` — valid JWT → allow + correct `tenantId`/`userId`/`role` in context; expired JWT → deny; malformed/bad-signature JWT → deny; missing header → deny
+- `signup` — valid → creates Tenant + Admin, returns JWT; duplicate email → rejected; stored `passwordHash` isn't plaintext
+- `login` — valid creds → JWT with correct claims; wrong password → 401; unknown email → same 401 (no user enumeration)
+- `invite-agent` — Admin inviting → creates Agent scoped to Admin's tenant with the given temp password; non-admin Agent attempting to invite → 403; duplicate email in-tenant → rejected
+
+**Tickets**
+- `create-ticket` — valid submission → Ticket(`Open`) + first Message(`customer`) + unique `trackingToken`; publishes `ticket.created` to EventBridge (assert the PutEvents call, EventBridge client mocked)
+- `list-tickets` — tenant isolation: a second tenant's tickets never appear in the caller's results; status/assignment filters work
+- `get-ticket` — returns own-tenant ticket + messages; cross-tenant ticket ID → 404
+- `claim-ticket` — `Open`→`InProgress`, `assignedAgentId` set, SLA elapsed correctly accumulated up to claim time; two simultaneous claims on the same ticket → exactly one succeeds, the other 409s (direct test of the `SELECT ... FOR UPDATE` mechanism); claiming a non-`Open` ticket → 409
+- `reply-to-ticket` (Agent path) — `InProgress`→`WaitingOnCustomer`, Message(`agent`), `ticket.replied` published, SLA accumulation correct; wrong precondition state → 409
+- `reply-to-ticket` (Customer path) — `WaitingOnCustomer`→`InProgress`, Message(`customer`), `ticket.replied` published, SLA resumes; invalid `trackingToken` → 404; wrong precondition state (including `Closed`) → 409; concurrent Agent+Customer reply on the same ticket → lock correctness (second atomicity test)
+- `close-ticket` — any open state → `Closed`, SLA elapsed frozen from that point forward; already-`Closed` → 409
+
+**Notifications**
+- `list-notifications` — scoped to caller's own `userId` + tenant
+- `mark-notification-read` — marks own notification; another user's notification → 404
+
+**Event-driven**
+- `send-email-notification` — `ticket.created` / customer-facing `ticket.replied` → correct SES call (SES client mocked)
+- `send-inapp-notification` — `ticket.created` → Notification for every Agent in tenant; agent-facing `ticket.replied` → Notification for assigned Agent; `ticket.sla_breached` → Notification for Admin(s)
+- `check-sla-breaches` — over-threshold + countable + `slaBreachedAt IS NULL` → sets it, fires event; already-breached → not re-fired (exactly-once); under-threshold → untouched; time spent `WaitingOnCustomer` → correctly excluded even if wall-clock-old; uses each Tenant's own `slaHours`
