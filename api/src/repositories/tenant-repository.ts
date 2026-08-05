@@ -1,5 +1,5 @@
 import type { Tenant } from "../domain/tenant";
-import { getDbClient } from "../lib/prisma";
+import { db } from "../lib/prisma";
 import { toDomain } from "../mappers/tenant-mapper";
 
 export interface CreateTenantInput {
@@ -9,7 +9,7 @@ export interface CreateTenantInput {
 
 export const tenantRepository = {
   async create(input: CreateTenantInput): Promise<Tenant> {
-    const tenant = await getDbClient().tenant.create({
+    const tenant = await db().tenant.create({
       data: {
         name: input.name,
         ...(input.slaHours !== undefined ? { slaHours: input.slaHours } : {}),
@@ -17,5 +17,10 @@ export const tenantRepository = {
     });
 
     return toDomain(tenant);
+  },
+
+  async findById(id: string): Promise<Tenant | null> {
+    const tenant = await db().tenant.findUnique({ where: { id } });
+    return tenant ? toDomain(tenant) : null;
   },
 };

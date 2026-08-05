@@ -1,6 +1,9 @@
+import type { Role } from "@prisma/client";
+
 export interface User {
   id: string;
   tenantId: string;
   email: string;
-  role: "admin" | "agent";
+  passwordHash: string;
+  role: Role;
 }

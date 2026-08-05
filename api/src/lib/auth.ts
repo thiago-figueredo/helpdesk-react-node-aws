@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import type { Role } from "@prisma/client";
 
 const BCRYPT_COST_FACTOR = 10;
 const TOKEN_EXPIRY = "24h";
@@ -7,7 +8,7 @@ const TOKEN_EXPIRY = "24h";
 export interface TokenClaims {
   userId: string;
   tenantId: string;
-  role: "admin" | "agent";
+  role: Role;
 }
 
 export function hashPassword(password: string): Promise<string> {

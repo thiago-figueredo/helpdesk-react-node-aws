@@ -6,30 +6,30 @@ Assumes familiarity with `CONTEXT.md` (domain glossary), `PRD.md` (flow/entities
 
 ## API routes
 
-| Method + path | Lambda | Auth |
-|---|---|---|
-| `POST /auth/signup` | `signup` | Public |
-| `POST /auth/login` | `login` | Public |
-| `POST /tickets` | `create-ticket` | Public |
-| `GET /customers/tickets/:trackingToken` | `get-ticket-by-token` | Public — `trackingToken` validated in-handler |
-| `POST /customers/tickets/:trackingToken/messages` | `reply-to-ticket` (shared) | Public — `trackingToken` validated in-handler |
-| `GET /tickets` | `list-tickets` | JWT + Authorizer |
-| `GET /tickets/:id` | `get-ticket` | JWT + Authorizer |
-| `POST /tickets/:id/claim` | `claim-ticket` | JWT + Authorizer |
-| `POST /tickets/:id/messages` | `reply-to-ticket` (shared) | JWT + Authorizer |
-| `POST /tickets/:id/close` | `close-ticket` | JWT + Authorizer |
-| `POST /agents` | `invite-agent` | JWT + Authorizer, Admin role only |
-| `GET /notifications` | `list-notifications` | JWT + Authorizer |
-| `POST /notifications/:id/read` | `mark-notification-read` | JWT + Authorizer |
+| Method + path | Lambda | Auth | Status |
+|---|---|---|---|
+| `POST /auth/signup` | `signup` | Public | ✅ |
+| `POST /auth/login` | `login` | Public | |
+| `POST /tickets` | `create-ticket` | Public | |
+| `GET /customers/tickets/:trackingToken` | `get-ticket-by-token` | Public — `trackingToken` validated in-handler | |
+| `POST /customers/tickets/:trackingToken/messages` | `reply-to-ticket` (shared) | Public — `trackingToken` validated in-handler | |
+| `GET /tickets` | `list-tickets` | JWT + Authorizer | |
+| `GET /tickets/:id` | `get-ticket` | JWT + Authorizer | |
+| `POST /tickets/:id/claim` | `claim-ticket` | JWT + Authorizer | |
+| `POST /tickets/:id/messages` | `reply-to-ticket` (shared) | JWT + Authorizer | |
+| `POST /tickets/:id/close` | `close-ticket` | JWT + Authorizer | |
+| `POST /agents` | `invite-agent` | JWT + Authorizer, Admin role only | |
+| `GET /notifications` | `list-notifications` | JWT + Authorizer | |
+| `POST /notifications/:id/read` | `mark-notification-read` | JWT + Authorizer | |
 
 Non-HTTP:
 
-| Lambda | Trigger |
-|---|---|
-| `check-sla-breaches` | EventBridge scheduled rule, `rate(15 minutes)` |
-| `send-email-notification` | SQS Email queue |
-| `send-inapp-notification` | SQS In-App queue |
-| `lambda-authorizer` | API Gateway custom authorizer, attached per-route to every JWT-protected route above |
+| Lambda | Trigger | Status |
+|---|---|---|
+| `check-sla-breaches` | EventBridge scheduled rule, `rate(15 minutes)` | |
+| `send-email-notification` | SQS Email queue | |
+| `send-inapp-notification` | SQS In-App queue | |
+| `lambda-authorizer` | API Gateway custom authorizer, attached per-route to every JWT-protected route above | |
 
 17 Lambdas total.
 
@@ -49,7 +49,7 @@ One `<Action>RequestSchema` / `<Action>ResponseSchema` Zod pair per route (e.g. 
 
 **See ADR 0004.** No Lambda talks to Prisma directly. The Service owns orchestration; entity-scoped Repositories (`UserRepository`, `TenantRepository`, `TicketRepository`, `MessageRepository`, `NotificationRepository`) own persistence and translate Prisma-specific failures into `DomainError`s; Mappers translate between Prisma rows, Domain objects, and the Zod DTOs from `@yourname/helpdesk-shared`.
 
-**See ADR 0005.** Transactions and error mapping are not the Service's concern. Every Lambda handler is wrapped, uniformly, by a shared `withTransaction` decorator (`api/src/lib/with-transaction.ts`) that opens a Prisma interactive transaction around the entire handler body — request parsing, Service/Repository calls, and any external I/O (EventBridge, SES) alike — and stores the active client in an `AsyncLocalStorage` context for that call's duration. Repositories read the active client via `getDbClient()` instead of taking an explicit `tx` param, falling back to the plain `prisma` client if no transaction is active. `withTransaction` also maps thrown `DomainError`s to HTTP responses via `api/src/lib/error-response.ts`, catching outside the `$transaction` callback so a `DomainError` rolls back the transaction before being converted to a response — handlers themselves have no try/catch. The `SELECT ... FOR UPDATE` mechanism in "Atomic update mechanism" below is expressed this way: inside a ticket-transition handler wrapped by `withTransaction`, the Service calls `ticketRepository.findForUpdate(id)`, checks the precondition, then calls `ticketRepository.update(...)` and `messageRepository.create(...)` — both resolving the same active `tx` via `getDbClient()`.
+**See ADR 0005.** Transactions and error mapping are not the Service's concern. Every Lambda handler is wrapped, uniformly, by a shared `withTransaction` decorator (`api/src/lib/with-transaction.ts`) that opens a Prisma interactive transaction around the entire handler body — request parsing, Service/Repository calls, and any external I/O (EventBridge, SES) alike — and stores the active client in an `AsyncLocalStorage` context for that call's duration. Repositories read the active client via `db()` instead of taking an explicit `tx` param, falling back to the plain `prisma` client if no transaction is active. `withTransaction` also maps thrown `DomainError`s to HTTP responses via `api/src/lib/error-response.ts`, catching outside the `$transaction` callback so a `DomainError` rolls back the transaction before being converted to a response — handlers themselves have no try/catch. The `SELECT ... FOR UPDATE` mechanism in "Atomic update mechanism" below is expressed this way: inside a ticket-transition handler wrapped by `withTransaction`, the Service calls `ticketRepository.findForUpdate(id)`, checks the precondition, then calls `ticketRepository.update(...)` and `messageRepository.create(...)` — both resolving the same active `tx` via `db()`.
 
 Layering is built incrementally, one Lambda at a time, only once that Lambda has a failing test driving it — not pre-built ahead of the rest.
 
@@ -73,9 +73,9 @@ Prisma's atomic `increment` alone does **not** fix this — it only atomically c
 **Decision: every status-transition write locks the row with `SELECT ... FOR UPDATE`** inside the transaction `withTransaction` (ADR 0005) already has open for the handler, re-reads fresh state under the lock, computes, writes:
 
 ```ts
-// ticket-repository.ts — reads the active tx via getDbClient(), per ADR 0005
+// ticket-repository.ts — reads the active tx via db(), per ADR 0005
 async findForUpdate(id: string, tenantId: string): Promise<Ticket | null> {
-  const [ticket] = await getDbClient().$queryRaw<Ticket[]>`
+  const [ticket] = await db().$queryRaw<Ticket[]>`
     SELECT * FROM "Ticket" WHERE id = ${id} AND "tenantId" = ${tenantId} FOR UPDATE
   `;
   return ticket ? toDomain(ticket) : null;

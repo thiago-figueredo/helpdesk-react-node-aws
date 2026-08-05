@@ -2,6 +2,7 @@
 module.exports = {
   preset: "ts-jest",
   testEnvironment: "node",
+  maxWorkers: 1,
   setupFiles: ["<rootDir>/test/env.ts"],
   setupFilesAfterEnv: ["<rootDir>/test/matchers.ts"],
   moduleNameMapper: {
