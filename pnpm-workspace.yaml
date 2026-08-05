@@ -5,3 +5,5 @@ allowBuilds:
   '@prisma/client': true
   '@prisma/engines': true
   prisma: true
+overrides:
+  constructs: ^10.3.0

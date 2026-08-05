@@ -45,6 +45,14 @@ Non-HTTP:
 
 One `<Action>RequestSchema` / `<Action>ResponseSchema` Zod pair per route (e.g. `ClaimTicketRequestSchema`), defined in `@yourname/helpdesk-shared`. Handlers parse the incoming body/params through the request schema at the top of the function (reject on failure before touching the DB); the same schemas are imported by `helpdesk-web` for typed API calls, so the contract only has one definition.
 
+## Application layering (Service / Repository / Mapper)
+
+**See ADR 0004.** No Lambda talks to Prisma directly. The Service owns orchestration; entity-scoped Repositories (`UserRepository`, `TenantRepository`, `TicketRepository`, `MessageRepository`, `NotificationRepository`) own persistence and translate Prisma-specific failures into `DomainError`s; Mappers translate between Prisma rows, Domain objects, and the Zod DTOs from `@yourname/helpdesk-shared`.
+
+**See ADR 0005.** Transactions and error mapping are not the Service's concern. Every Lambda handler is wrapped, uniformly, by a shared `withTransaction` decorator (`api/src/lib/with-transaction.ts`) that opens a Prisma interactive transaction around the entire handler body — request parsing, Service/Repository calls, and any external I/O (EventBridge, SES) alike — and stores the active client in an `AsyncLocalStorage` context for that call's duration. Repositories read the active client via `getDbClient()` instead of taking an explicit `tx` param, falling back to the plain `prisma` client if no transaction is active. `withTransaction` also maps thrown `DomainError`s to HTTP responses via `api/src/lib/error-response.ts`, catching outside the `$transaction` callback so a `DomainError` rolls back the transaction before being converted to a response — handlers themselves have no try/catch. The `SELECT ... FOR UPDATE` mechanism in "Atomic update mechanism" below is expressed this way: inside a ticket-transition handler wrapped by `withTransaction`, the Service calls `ticketRepository.findForUpdate(id)`, checks the precondition, then calls `ticketRepository.update(...)` and `messageRepository.create(...)` — both resolving the same active `tx` via `getDbClient()`.
+
+Layering is built incrementally, one Lambda at a time, only once that Lambda has a failing test driving it — not pre-built ahead of the rest.
+
 ## Status-transition logic
 
 Every transition enforces a **strict state guard**: a Lambda only accepts its one documented precondition state and rejects (409) otherwise. No implicit claim-on-reply, no reopening a `Closed` ticket via a stale `trackingToken` link — matches the "no AI/NLP, simple state machine" scope already locked in PRD.md, and keeps every transition testable as a single precondition → postcondition pair.
@@ -62,27 +70,29 @@ The naive read-then-write (read `Ticket`, compute `wasCountable`/`elapsedSinceLa
 
 Prisma's atomic `increment` alone does **not** fix this — it only atomically computes the new value of `slaElapsedMs` from the DB's current value, but the *decision* of whether to increment at all, and by how much, still depends on `status`/`lastTransitionAt` read earlier into application memory.
 
-**Decision: wrap every status-transition write in a Prisma interactive transaction using `SELECT ... FOR UPDATE`** to lock the row, re-read fresh state under the lock, compute, write, commit:
+**Decision: every status-transition write locks the row with `SELECT ... FOR UPDATE`** inside the transaction `withTransaction` (ADR 0005) already has open for the handler, re-reads fresh state under the lock, computes, writes:
 
 ```ts
-await prisma.$transaction(async (tx) => {
-  const [ticket] = await tx.$queryRaw<Ticket[]>`
+// ticket-repository.ts — reads the active tx via getDbClient(), per ADR 0005
+async findForUpdate(id: string, tenantId: string): Promise<Ticket | null> {
+  const [ticket] = await getDbClient().$queryRaw<Ticket[]>`
     SELECT * FROM "Ticket" WHERE id = ${id} AND "tenantId" = ${tenantId} FOR UPDATE
   `;
-  if (!ticket) throw new NotFoundError();
-  if (ticket.status !== expectedStatus) throw new ConflictError();
+  return ticket ? toDomain(ticket) : null;
+}
 
-  const wasCountable = ticket.status === 'Open' || ticket.status === 'InProgress';
-  const elapsedSinceLastTransition = now - ticket.lastTransitionAt;
+// claim-ticket-service.ts — no $transaction here; withTransaction already opened one
+const ticket = await ticketRepository.findForUpdate(id, tenantId);
+if (!ticket) throw new NotFoundError();
+if (ticket.status !== expectedStatus) throw new ConflictError();
 
-  await tx.ticket.update({
-    where: { id },
-    data: {
-      status: newStatus,
-      lastTransitionAt: now,
-      slaElapsedMs: wasCountable ? ticket.slaElapsedMs + elapsedSinceLastTransition : ticket.slaElapsedMs,
-    },
-  });
+const wasCountable = ticket.status === 'Open' || ticket.status === 'InProgress';
+const elapsedSinceLastTransition = now - ticket.lastTransitionAt;
+
+await ticketRepository.update(id, {
+  status: newStatus,
+  lastTransitionAt: now,
+  slaElapsedMs: wasCountable ? ticket.slaElapsedMs + elapsedSinceLastTransition : ticket.slaElapsedMs,
 });
 ```
 
@@ -95,6 +105,8 @@ Rejected alternatives: optimistic concurrency (`updateMany` gated on the previou
 - **Database**: Dockerized Postgres for tests (Neon stays the prod target). Reset via unique, randomized fixtures per test (fresh Tenant/User/Ticket via a `createTestTenant()`-style factory) rather than per-test truncation; one truncate-all in `beforeAll`/`afterAll` per test file.
 - **Invocation**: every Lambda's test imports the handler and calls it directly with a hand-built event object (`APIGatewayProxyEventV2`, `SQSEvent`, or the EventBridge scheduled-event shape, as appropriate) — no API Gateway/SQS emulation.
 - **Auth in tests**: `lambda-authorizer` has its own dedicated suite covering JWT verification. Every other Agent-authenticated Lambda's tests fabricate `event.requestContext.authorizer.lambda` directly with whatever identity the test needs, rather than re-running real JWT verification per test.
+- **Layering is refactored in under the handler-level integration test, not separately unit-tested.** Extracting a Lambda's Service/Repository/Mapper (ADR 0004) is the refactor step of red-green-refactor under that Lambda's already-green `<name>-handler.test.ts` — no dedicated `*-service.test.ts` or `*-repository.test.ts` files. Prefer one `expect` against the whole returned/persisted object over one `expect` per field where possible.
+- **Database assertions use Laravel-style custom Jest matchers**, defined in `api/test/matchers.ts` (`expect.extend` + the `declare global { namespace jest {...} } }` type augmentation live in the same file, wired via `setupFilesAfterEnv`): `expect(tableName).assertDatabaseHas(criteria)` (≥1 match), `assertDatabaseHasOne(criteria)` (exactly 1 match), `assertDatabaseCount(count)` / `assertDatabaseCount(criteria, count)`, `assertNotInDatabase(criteria)` (0 matches). `tableName` is typed `Uncapitalize<Prisma.ModelName>`, matching `testPrisma`'s delegate names. All are async — callers must `await` them. On failure they re-query the table (capped at 5 rows) and print the actual rows alongside the expected criteria.
 
 ### Per-Lambda behaviors
 
