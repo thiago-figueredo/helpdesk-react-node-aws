@@ -1,11 +1,7 @@
 import { DomainError } from "../domain/errors";
+import type { ApiResult } from "./api-result";
 
-export interface ErrorResult {
-  statusCode: number;
-  body: string;
-}
-
-export function toErrorResponse(err: unknown): ErrorResult {
+export function toErrorResponse(err: unknown): ApiResult {
   if (err instanceof DomainError) {
     return { statusCode: err.statusCode, body: JSON.stringify({ error: err.message }) };
   }

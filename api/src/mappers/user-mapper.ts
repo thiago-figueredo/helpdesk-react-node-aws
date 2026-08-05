@@ -1,5 +1,5 @@
 import type { User as PrismaUser } from "@prisma/client";
-import type { SignupResponse } from "@yourname/helpdesk-shared";
+import type { UserDto } from "@yourname/helpdesk-shared";
 import type { User } from "../domain/user";
 
 export function toDomain(user: PrismaUser): User {
@@ -7,10 +7,11 @@ export function toDomain(user: PrismaUser): User {
     id: user.id,
     tenantId: user.tenantId,
     email: user.email,
+    passwordHash: user.passwordHash,
     role: user.role,
   };
 }
 
-export function toResponseDto(user: User): SignupResponse["user"] {
+export function toResponseDto(user: User): UserDto {
   return { id: user.id, email: user.email, role: user.role };
 }

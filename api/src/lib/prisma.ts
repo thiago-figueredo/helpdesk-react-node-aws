@@ -7,7 +7,7 @@ type TransactionClient = Prisma.TransactionClient;
 
 const transactionStorage = new AsyncLocalStorage<TransactionClient>();
 
-export function getDbClient(): PrismaClient | TransactionClient {
+export function db(): PrismaClient | TransactionClient {
   return transactionStorage.getStore() ?? prisma;
 }
 

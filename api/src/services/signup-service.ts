@@ -1,3 +1,4 @@
+import { Role } from "@prisma/client";
 import type { SignupRequest, SignupResponse } from "@yourname/helpdesk-shared";
 import { hashPassword, signToken } from "../lib/auth";
 import { toResponseDto as tenantToResponseDto } from "../mappers/tenant-mapper";
@@ -17,7 +18,7 @@ export async function signup(input: SignupRequest): Promise<SignupResponse> {
     tenantId: tenant.id,
     email: input.email,
     passwordHash,
-    role: "admin",
+    role: Role.admin,
   });
 
   const token = signToken({

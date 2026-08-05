@@ -13,3 +13,15 @@ export class DuplicateEmailError extends DomainError {
     super(409, "Email already in use");
   }
 }
+
+export class InvalidCredentialsError extends DomainError {
+  constructor() {
+    super(401, "Invalid email or password");
+  }
+}
+
+export class TenantNotFoundError extends DomainError {
+  constructor() {
+    super(404, "Tenant not found");
+  }
+}

@@ -1,7 +1,7 @@
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
 import { SignupResponseSchema } from "@yourname/helpdesk-shared";
-import { testPrisma, truncateAll } from "../../test/db";
-import { handler } from "./signup-handler";
+import { setDown, setUp, testPrisma } from "../../test/db";
+import { signupHandler } from "./signup-handler";
 
 function buildEvent(body: unknown): APIGatewayProxyEventV2 {
   return { body: JSON.stringify(body) } as APIGatewayProxyEventV2;
@@ -12,19 +12,13 @@ function uniqueEmail(): string {
 }
 
 describe("signup", () => {
-  beforeAll(async () => {
-    await truncateAll();
-  });
-
-  afterAll(async () => {
-    await truncateAll();
-    await testPrisma.$disconnect();
-  });
+  beforeAll(setUp);
+  afterAll(setDown);
 
   it("creates a Tenant and Admin User, returning a token", async () => {
     const email = uniqueEmail();
 
-    const result = await handler(
+    const result = await signupHandler(
       buildEvent({
         email,
         password: "supersecret123",
@@ -58,7 +52,7 @@ describe("signup", () => {
   it("rejects a duplicate email with 409", async () => {
     const email = uniqueEmail();
 
-    const first = await handler(
+    const first = await signupHandler(
       buildEvent({
         email,
         password: "supersecret123",
@@ -67,7 +61,7 @@ describe("signup", () => {
     );
     expect(first.statusCode).toBe(201);
 
-    const second = await handler(
+    const second = await signupHandler(
       buildEvent({
         email,
         password: "different-password-1",
@@ -91,7 +85,7 @@ describe("signup", () => {
     const email = uniqueEmail();
     const password = "supersecret123";
 
-    const result = await handler(
+    const result = await signupHandler(
       buildEvent({ email, password, tenantName: "Acme Support" }),
     );
     const response = SignupResponseSchema.parse(JSON.parse(result.body));

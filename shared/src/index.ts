@@ -1,5 +1,18 @@
 import { z } from "zod";
 
+export const UserDtoSchema = z.object({
+  id: z.string(),
+  email: z.string().email(),
+  role: z.enum(["admin", "agent"]),
+});
+export type UserDto = z.infer<typeof UserDtoSchema>;
+
+export const TenantDtoSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+});
+export type TenantDto = z.infer<typeof TenantDtoSchema>;
+
 export const SignupRequestSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
@@ -10,14 +23,20 @@ export type SignupRequest = z.infer<typeof SignupRequestSchema>;
 
 export const SignupResponseSchema = z.object({
   token: z.string(),
-  user: z.object({
-    id: z.string(),
-    email: z.string().email(),
-    role: z.enum(["admin", "agent"]),
-  }),
-  tenant: z.object({
-    id: z.string(),
-    name: z.string(),
-  }),
+  user: UserDtoSchema,
+  tenant: TenantDtoSchema,
 });
 export type SignupResponse = z.infer<typeof SignupResponseSchema>;
+
+export const LoginRequestSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(1),
+});
+export type LoginRequest = z.infer<typeof LoginRequestSchema>;
+
+export const LoginResponseSchema = z.object({
+  token: z.string(),
+  user: UserDtoSchema,
+  tenant: TenantDtoSchema,
+});
+export type LoginResponse = z.infer<typeof LoginResponseSchema>;
