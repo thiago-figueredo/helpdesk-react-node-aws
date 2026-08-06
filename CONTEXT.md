@@ -5,8 +5,12 @@ A multi-tenant support ticketing system where companies (Tenants) manage custome
 ## Language
 
 **Tenant**:
-A company using the helpdesk to manage its own customer support. Owns its Users and Tickets; no Tenant can see another Tenant's data.
+A company using the helpdesk to manage its own customer support. Owns its Users and Tickets; no Tenant can see another Tenant's data. Identified by a globally unique `name` (matched trim+lowercase-normalized, so casing/whitespace never distinguishes two Tenants). Comes into existence one of two ways: an Admin signing up under that name, or a Customer submitting a Ticket under a name nobody has signed up under yet (see **Unclaimed Tenant**). Either way there is only ever one Tenant per name.
 _Avoid_: Organization, company, account
+
+**Unclaimed Tenant**:
+A Tenant with zero Users — created implicitly when a Customer's Ticket submission names a Tenant that doesn't exist yet, rather than by an Admin signing up. Has no Admin or Agent able to log in and see its Tickets until an Admin signs up under the same name, which _claims_ it (attaches that Admin to the existing Tenant row instead of creating a second one). A Tenant that already has an Admin cannot be claimed again — signing up under its name is rejected.
+_Avoid_: Orphaned account, pending tenant
 
 **Admin**:
 A User role that owns a Tenant, can invite/manage Agents, and can perform everything an Agent can.

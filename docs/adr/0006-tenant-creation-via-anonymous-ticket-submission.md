@@ -1,0 +1,14 @@
+# Tenants can be created by an anonymous Customer, not only by Admin signup
+
+`create-ticket` is public and unauthenticated (no JWT, no tenant segment in the path), but every `Ticket` requires a `tenantId`. Rather than requiring the Customer's ticket form to already know an internal Tenant id, `create-ticket` accepts a `tenantName` and resolves it to a Tenant via get-or-create: if a Tenant with that name doesn't exist yet, it's created on the spot, with no Admin or Agent attached.
+
+This means Tenant creation is no longer exclusively tied to Admin signup, which is a real departure from `CONTEXT.md`'s original framing ("a company using the helpdesk... owns its Users and Tickets") — a Tenant can now exist with zero Users, holding Tickets nobody at that company can see yet.
+
+To avoid these "unclaimed" Tenants becoming permanently stranded (an Admin signing up under the same name later would otherwise get a second, separate Tenant, silently orphaning the first one's Tickets forever), `signup` was changed from always-create to the same get-or-create lookup: signing up under a name that matches an existing zero-User Tenant _claims_ it (the new Admin is attached to that row) instead of creating a duplicate. Signing up under a name that already has an Admin is rejected (409) — a Tenant can only ever be claimed once.
+
+`Tenant.name` is `@unique`, matched trim+lowercase-normalized (one column, storing the normalized value directly — not a separate raw/normalized pair), so "Acme Corp" typed by a Customer and "acme corp" typed later by an Admin resolve to the same row. Concurrent get-or-create races (two Customers submitting tickets for the same brand-new name at once) are resolved by a Prisma `upsert` against the unique constraint — no explicit row lock needed, unlike the SLA status-transition mechanism, because this is a pure get-or-create with no read-computed-write step.
+
+**Consequences:**
+- Original display casing of a Tenant's name is never preserved — `Tenant.name` is always the normalized form, in the DB and in every API response. Reversing this later (to preserve display casing) means re-introducing a second column and backfilling it from whatever's still inferable.
+- Any party who knows (or guesses) a company's name can create a Tenant and attach Tickets to it before that company ever signs up. This is an accepted trade-off for a one-week portfolio build with no anti-squatting or verification step — a production system would likely require the Admin to prove ownership (e.g. a verified work-email domain) before claiming.
+- `signup`'s existing test suite and behavior change: it can now return 409 for a name conflict distinct from the existing email conflict, and a successful signup can now mean "attached to an existing Tenant" rather than "always a new one."

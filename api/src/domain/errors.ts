@@ -25,3 +25,9 @@ export class TenantNotFoundError extends DomainError {
     super(404, "Tenant not found");
   }
 }
+
+export class TenantNameTakenError extends DomainError {
+  constructor() {
+    super(409, "Tenant name already taken");
+  }
+}
