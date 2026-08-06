@@ -9,8 +9,8 @@ Assumes familiarity with `CONTEXT.md` (domain glossary), `PRD.md` (flow/entities
 | Method + path | Lambda | Auth | Status |
 |---|---|---|---|
 | `POST /auth/signup` | `signup` | Public | ✅ |
-| `POST /auth/login` | `login` | Public | |
-| `POST /tickets` | `create-ticket` | Public | |
+| `POST /auth/login` | `login` | Public | ✅ |
+| `POST /tickets` | `create-ticket` | Public | ✅ |
 | `GET /customers/tickets/:trackingToken` | `get-ticket-by-token` | Public — `trackingToken` validated in-handler | |
 | `POST /customers/tickets/:trackingToken/messages` | `reply-to-ticket` (shared) | Public — `trackingToken` validated in-handler | |
 | `GET /tickets` | `list-tickets` | JWT + Authorizer | |
@@ -98,6 +98,14 @@ await ticketRepository.update(id, {
 
 Rejected alternatives: optimistic concurrency (`updateMany` gated on the previously-read `lastTransitionAt`, retry on 0 rows affected) avoids holding a lock but adds retry-loop code for a race that, given single-agent-per-ticket traffic, will essentially never fire; plain `increment` is insufficient per above. Not written up as an ADR — reversible later without much cost, recorded here instead.
 
+## Tenant resolution for `create-ticket`
+
+**See ADR 0006.** `create-ticket` is public and unauthenticated, so it can't resolve a `tenantId` from a JWT or path param — instead the request carries `tenantName`, and `TenantRepository.getOrCreate` resolves it via `db().tenant.upsert({ where: { name }, update: {}, create: { name } })`, where `name` is passed in already trim+lowercase-normalized. `Tenant.name` is `@unique` on that normalized value — one column, no separate raw-casing field, so original display casing is never preserved. `upsert` resolves concurrent get-or-create races on a brand-new name atomically via the unique constraint itself; no explicit `SELECT ... FOR UPDATE` is needed here, unlike the SLA transition mechanism below, because there's no read-computed-write step.
+
+A Tenant created this way has zero `User`s ("unclaimed" — see `CONTEXT.md`) until an Admin signs up under the same (normalized) name. `signup` therefore uses the same `getOrCreate` lookup rather than always inserting a new row: if the resolved Tenant has zero Users, the new Admin is attached to it (claiming it); if it already has ≥1 User, signup rejects with a new `TenantNameTakenError` (409).
+
+The Customer's email for a Ticket lives on `Message.senderEmail` (nullable, set only on the Ticket's first/customer-authored Message) rather than as a `Ticket` column — anything needing "the Ticket's customer email" (e.g. `send-email-notification`) queries for the Ticket's first Message, not its latest customer Message, since `reply-to-ticket`'s Customer path never re-supplies it.
+
 ## Jest integration test plan
 
 ### Test infrastructure
@@ -112,12 +120,12 @@ Rejected alternatives: optimistic concurrency (`updateMany` gated on the previou
 
 **Auth**
 - `lambda-authorizer` — valid JWT → allow + correct `tenantId`/`userId`/`role` in context; expired JWT → deny; malformed/bad-signature JWT → deny; missing header → deny
-- `signup` — valid → creates Tenant + Admin, returns JWT; duplicate email → rejected; stored `passwordHash` isn't plaintext
+- `signup` — valid, new tenant name → creates Tenant + Admin, returns JWT; valid, name matches an existing zero-User Tenant → claims it (attaches Admin to that row, no duplicate created); name already claimed by another Admin → 409 (`TenantNameTakenError`); duplicate email → rejected; stored `passwordHash` isn't plaintext
 - `login` — valid creds → JWT with correct claims; wrong password → 401; unknown email → same 401 (no user enumeration)
 - `invite-agent` — Admin inviting → creates Agent scoped to Admin's tenant with the given temp password; non-admin Agent attempting to invite → 403; duplicate email in-tenant → rejected
 
 **Tickets**
-- `create-ticket` — valid submission → Ticket(`Open`) + first Message(`customer`) + unique `trackingToken`; publishes `ticket.created` to EventBridge (assert the PutEvents call, EventBridge client mocked)
+- `create-ticket` — valid submission, new `tenantName` → creates Tenant (zero Users) + Ticket(`Open`) + first Message(`customer`, `senderEmail` set) + unique `trackingToken`; valid submission, `tenantName` matches an existing Tenant → reuses that Tenant, doesn't create a duplicate; publishes `ticket.created` to EventBridge (assert the PutEvents call, EventBridge client mocked)
 - `list-tickets` — tenant isolation: a second tenant's tickets never appear in the caller's results; status/assignment filters work
 - `get-ticket` — returns own-tenant ticket + messages; cross-tenant ticket ID → 404
 - `claim-ticket` — `Open`→`InProgress`, `assignedAgentId` set, SLA elapsed correctly accumulated up to claim time; two simultaneous claims on the same ticket → exactly one succeeds, the other 409s (direct test of the `SELECT ... FOR UPDATE` mechanism); claiming a non-`Open` ticket → 409

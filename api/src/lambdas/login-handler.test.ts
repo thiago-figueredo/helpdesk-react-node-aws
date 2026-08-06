@@ -14,6 +14,10 @@ function uniqueEmail(): string {
   return `agent-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
 }
 
+function uniqueTenantName(): string {
+  return `Acme Support ${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 describe("login", () => {
   beforeAll(setUp);
   afterAll(setDown);
@@ -21,9 +25,10 @@ describe("login", () => {
   it("returns a token and correct claims for valid credentials", async () => {
     const email = uniqueEmail();
     const password = "supersecret123";
+    const tenantName = uniqueTenantName();
 
     const signup = await signupHandler(
-      buildEvent({ email, password, tenantName: "Acme Support" }),
+      buildEvent({ email, password, tenantName }),
     );
 
     const signupBody = JSON.parse(signup.body);
@@ -37,7 +42,7 @@ describe("login", () => {
     expect(response).toEqual({
       token: expect.any(String),
       user: { id: signupBody.user.id, email, role: "admin" },
-      tenant: { id: signupBody.tenant.id, name: "Acme Support" },
+      tenant: { id: signupBody.tenant.id, name: tenantName.toLowerCase() },
     });
 
     const claims = jwt.verify(response.token, process.env.JWT_SECRET as string);
@@ -67,7 +72,7 @@ describe("login", () => {
       buildEvent({
         email,
         password: "supersecret123",
-        tenantName: "Acme Support",
+        tenantName: uniqueTenantName(),
       }),
     );
 

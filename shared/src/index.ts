@@ -40,3 +40,23 @@ export const LoginResponseSchema = z.object({
   tenant: TenantDtoSchema,
 });
 export type LoginResponse = z.infer<typeof LoginResponseSchema>;
+
+export const TicketDtoSchema = z.object({
+  id: z.string(),
+  status: z.enum(["Open", "InProgress", "WaitingOnCustomer", "Closed"]),
+  createdAt: z.string(),
+});
+export type TicketDto = z.infer<typeof TicketDtoSchema>;
+
+export const CreateTicketRequestSchema = z.object({
+  tenantName: z.string().min(1),
+  customerEmail: z.string().email(),
+  body: z.string().min(1),
+});
+export type CreateTicketRequest = z.infer<typeof CreateTicketRequestSchema>;
+
+export const CreateTicketResponseSchema = z.object({
+  trackingToken: z.string(),
+  ticket: TicketDtoSchema,
+});
+export type CreateTicketResponse = z.infer<typeof CreateTicketResponseSchema>;

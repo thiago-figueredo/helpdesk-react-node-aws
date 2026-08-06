@@ -31,4 +31,9 @@ export const userRepository = {
     const user = await db().user.findUnique({ where: { email } });
     return user ? toDomain(user) : null;
   },
+
+  async existsForTenant(tenantId: string): Promise<boolean> {
+    const count = await db().user.count({ where: { tenantId } });
+    return count > 0;
+  },
 };
