@@ -11,7 +11,7 @@ Assumes familiarity with `CONTEXT.md` (domain glossary), `PRD.md` (flow/entities
 | `POST /auth/signup` | `signup` | Public | ✅ |
 | `POST /auth/login` | `login` | Public | ✅ |
 | `POST /tickets` | `create-ticket` | Public | ✅ |
-| `GET /customers/tickets/:trackingToken` | `get-ticket-by-token` | Public — `trackingToken` validated in-handler | |
+| `GET /customers/tickets/:trackingToken` | `get-ticket-by-token` | Public — `trackingToken` validated in-handler | ✅ |
 | `POST /customers/tickets/:trackingToken/messages` | `reply-to-ticket` (shared) | Public — `trackingToken` validated in-handler | |
 | `GET /tickets` | `list-tickets` | JWT + Authorizer | |
 | `GET /tickets/:id` | `get-ticket` | JWT + Authorizer | |
@@ -126,6 +126,7 @@ The Customer's email for a Ticket lives on `Message.senderEmail` (nullable, set 
 
 **Tickets**
 - `create-ticket` — valid submission, new `tenantName` → creates Tenant (zero Users) + Ticket(`Open`) + first Message(`customer`, `senderEmail` set) + unique `trackingToken`; valid submission, `tenantName` matches an existing Tenant → reuses that Tenant, doesn't create a duplicate; publishes `ticket.created` to EventBridge (assert the PutEvents call, EventBridge client mocked)
+- `get-ticket-by-token` — valid `trackingToken` → ticket + its messages, oldest-first (`createdAt` asc); unknown `trackingToken` → 404 (`TicketNotFoundError`)
 - `list-tickets` — tenant isolation: a second tenant's tickets never appear in the caller's results; status/assignment filters work
 - `get-ticket` — returns own-tenant ticket + messages; cross-tenant ticket ID → 404
 - `claim-ticket` — `Open`→`InProgress`, `assignedAgentId` set, SLA elapsed correctly accumulated up to claim time; two simultaneous claims on the same ticket → exactly one succeeds, the other 409s (direct test of the `SELECT ... FOR UPDATE` mechanism); claiming a non-`Open` ticket → 409

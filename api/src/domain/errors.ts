@@ -31,3 +31,9 @@ export class TenantNameTakenError extends DomainError {
     super(409, "Tenant name already taken");
   }
 }
+
+export class TicketNotFoundError extends DomainError {
+  constructor() {
+    super(404, "Ticket not found");
+  }
+}

@@ -60,3 +60,22 @@ export const CreateTicketResponseSchema = z.object({
   ticket: TicketDtoSchema,
 });
 export type CreateTicketResponse = z.infer<typeof CreateTicketResponseSchema>;
+
+export const MessageDtoSchema = z.object({
+  id: z.string(),
+  senderType: z.enum(["customer", "agent"]),
+  body: z.string(),
+  createdAt: z.string(),
+});
+export type MessageDto = z.infer<typeof MessageDtoSchema>;
+
+export const GetTicketByTokenRequestSchema = z.object({
+  trackingToken: z.string().min(1),
+});
+export type GetTicketByTokenRequest = z.infer<typeof GetTicketByTokenRequestSchema>;
+
+export const GetTicketByTokenResponseSchema = z.object({
+  ticket: TicketDtoSchema,
+  messages: z.array(MessageDtoSchema),
+});
+export type GetTicketByTokenResponse = z.infer<typeof GetTicketByTokenResponseSchema>;

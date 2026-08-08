@@ -1,16 +1,10 @@
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
 import { CreateTicketResponseSchema } from "@yourname/helpdesk-shared";
 import { setDown, setUp, testPrisma } from "../../test/db";
-
-const sendEventToAWS = jest.fn().mockResolvedValue({});
-jest.mock("@aws-sdk/client-eventbridge", () => ({
-  EventBridgeClient: jest
-    .fn()
-    .mockImplementation(() => ({ send: sendEventToAWS })),
-  PutEventsCommand: jest.fn().mockImplementation((input) => ({ input })),
-}));
-
+import { mockAwsEventBridgeSDK } from "../../test/mock-event-bridge";
 import { createTicketHandler } from "./create-ticket-handler";
+
+const sendEventToAWS = mockAwsEventBridgeSDK();
 
 function buildEvent(body: unknown): APIGatewayProxyEventV2 {
   return { body: JSON.stringify(body) } as APIGatewayProxyEventV2;
