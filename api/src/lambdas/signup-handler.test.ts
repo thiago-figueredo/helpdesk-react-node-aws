@@ -1,27 +1,15 @@
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
 import { SignupResponseSchema } from "@yourname/helpdesk-shared";
 import { setDown, setUp, testPrisma } from "../../test/db";
+import { buildEvent, uniqueEmail, uniqueTenantName } from "../../test/fixtures";
 import { tenantRepository } from "../repositories/tenant-repository";
 import { signupHandler } from "./signup-handler";
-
-function buildEvent(body: unknown): APIGatewayProxyEventV2 {
-  return { body: JSON.stringify(body) } as APIGatewayProxyEventV2;
-}
-
-function uniqueEmail(): string {
-  return `admin-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
-}
-
-function uniqueTenantName(): string {
-  return `Acme Support ${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
 
 describe("signup", () => {
   beforeAll(setUp);
   afterAll(setDown);
 
   it("creates a Tenant and Admin User, returning a token", async () => {
-    const email = uniqueEmail();
+    const email = uniqueEmail("admin");
     const tenantName = uniqueTenantName();
 
     const result = await signupHandler(
@@ -57,7 +45,7 @@ describe("signup", () => {
   });
 
   it("rejects a duplicate email with 409", async () => {
-    const email = uniqueEmail();
+    const email = uniqueEmail("admin");
     const secondTenantName = uniqueTenantName();
 
     const first = await signupHandler(
@@ -90,7 +78,7 @@ describe("signup", () => {
   });
 
   it("stores a hashed password, never the plaintext", async () => {
-    const email = uniqueEmail();
+    const email = uniqueEmail("admin");
     const password = "supersecret123";
 
     const result = await signupHandler(
@@ -113,7 +101,7 @@ describe("signup", () => {
 
     const result = await signupHandler(
       buildEvent({
-        email: uniqueEmail(),
+        email: uniqueEmail("admin"),
         password: "supersecret123",
         tenantName,
       }),
@@ -133,7 +121,7 @@ describe("signup", () => {
 
     const first = await signupHandler(
       buildEvent({
-        email: uniqueEmail(),
+        email: uniqueEmail("admin"),
         password: "supersecret123",
         tenantName,
       }),
@@ -142,7 +130,7 @@ describe("signup", () => {
 
     const second = await signupHandler(
       buildEvent({
-        email: uniqueEmail(),
+        email: uniqueEmail("admin"),
         password: "different-password-1",
         tenantName,
       }),

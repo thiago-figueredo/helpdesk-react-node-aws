@@ -37,3 +37,18 @@ export class TicketNotFoundError extends DomainError {
     super(404, "Ticket not found");
   }
 }
+
+export class TicketStatusConflictError extends DomainError {
+  constructor(actual: string, expected: string | string[]) {
+    const expectedDescription = Array.isArray(expected)
+      ? `expected one of ${expected.join(", ")}`
+      : `expected ${expected}`;
+    super(409, `Ticket status is ${actual}, ${expectedDescription}.`);
+  }
+}
+
+export class NotAssignedAgentError extends DomainError {
+  constructor() {
+    super(403, "You are not the assigned agent for this ticket");
+  }
+}

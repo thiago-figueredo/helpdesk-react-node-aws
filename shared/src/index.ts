@@ -79,3 +79,14 @@ export const GetTicketByTokenResponseSchema = z.object({
   messages: z.array(MessageDtoSchema),
 });
 export type GetTicketByTokenResponse = z.infer<typeof GetTicketByTokenResponseSchema>;
+
+export const ReplyToTicketRequestSchema = z.object({
+  body: z.string().min(1),
+});
+export type ReplyToTicketRequest = z.infer<typeof ReplyToTicketRequestSchema>;
+
+export const ReplyToTicketResponseSchema = z.object({
+  ticket: TicketDtoSchema,
+  message: MessageDtoSchema,
+});
+export type ReplyToTicketResponse = z.infer<typeof ReplyToTicketResponseSchema>;

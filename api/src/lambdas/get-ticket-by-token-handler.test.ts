@@ -1,23 +1,12 @@
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
 import { CreateTicketResponseSchema, GetTicketByTokenResponseSchema } from "@yourname/helpdesk-shared";
 import { setDown, setUp } from "../../test/db";
+import { buildEvent, uniqueTenantName } from "../../test/fixtures";
 import { mockAwsEventBridgeSDK } from "../../test/mock-event-bridge";
 import { createTicketHandler } from "./create-ticket-handler";
 import { getTicketByTokenHandler } from "./get-ticket-by-token-handler";
+import { buildGetTicketByTokenEvent } from "./get-ticket-by-token-handler.test-utils";
 
 mockAwsEventBridgeSDK();
-
-function buildCreateTicketEvent(body: unknown): APIGatewayProxyEventV2 {
-  return { body: JSON.stringify(body) } as APIGatewayProxyEventV2;
-}
-
-function buildEvent(trackingToken: string): APIGatewayProxyEventV2 {
-  return { pathParameters: { trackingToken } } as unknown as APIGatewayProxyEventV2;
-}
-
-function uniqueTenantName(): string {
-  return `Acme Support ${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
 
 describe("get-ticket-by-token", () => {
   beforeAll(setUp);
@@ -25,7 +14,7 @@ describe("get-ticket-by-token", () => {
 
   it("returns the ticket and its messages, oldest-first, for a valid trackingToken", async () => {
     const created = await createTicketHandler(
-      buildCreateTicketEvent({
+      buildEvent({
         tenantName: uniqueTenantName(),
         customerEmail: "jane@example.com",
         body: "Can't log in",
@@ -33,7 +22,7 @@ describe("get-ticket-by-token", () => {
     );
     const createdResponse = CreateTicketResponseSchema.parse(JSON.parse(created.body));
 
-    const result = await getTicketByTokenHandler(buildEvent(createdResponse.trackingToken));
+    const result = await getTicketByTokenHandler(buildGetTicketByTokenEvent(createdResponse.trackingToken));
 
     expect(result.statusCode).toBe(200);
 
@@ -53,7 +42,7 @@ describe("get-ticket-by-token", () => {
   });
 
   it("rejects an unknown trackingToken with 404", async () => {
-    const result = await getTicketByTokenHandler(buildEvent("00000000-0000-0000-0000-000000000000"));
+    const result = await getTicketByTokenHandler(buildGetTicketByTokenEvent("00000000-0000-0000-0000-000000000000"));
 
     expect(result).toEqual({
       statusCode: 404,

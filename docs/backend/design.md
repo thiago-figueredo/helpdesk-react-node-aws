@@ -12,11 +12,11 @@ Assumes familiarity with `CONTEXT.md` (domain glossary), `PRD.md` (flow/entities
 | `POST /auth/login` | `login` | Public | ✅ |
 | `POST /tickets` | `create-ticket` | Public | ✅ |
 | `GET /customers/tickets/:trackingToken` | `get-ticket-by-token` | Public — `trackingToken` validated in-handler | ✅ |
-| `POST /customers/tickets/:trackingToken/messages` | `reply-to-ticket` (shared) | Public — `trackingToken` validated in-handler | |
+| `POST /customers/tickets/:trackingToken/messages` | `reply-to-ticket` (shared) | Public — `trackingToken` validated in-handler | ✅ |
 | `GET /tickets` | `list-tickets` | JWT + Authorizer | |
 | `GET /tickets/:id` | `get-ticket` | JWT + Authorizer | |
 | `POST /tickets/:id/claim` | `claim-ticket` | JWT + Authorizer | |
-| `POST /tickets/:id/messages` | `reply-to-ticket` (shared) | JWT + Authorizer | |
+| `POST /tickets/:id/messages` | `reply-to-ticket` (shared) | JWT + Authorizer | ✅ |
 | `POST /tickets/:id/close` | `close-ticket` | JWT + Authorizer | |
 | `POST /agents` | `invite-agent` | JWT + Authorizer, Admin role only | |
 | `GET /notifications` | `list-notifications` | JWT + Authorizer | |
@@ -37,9 +37,10 @@ Non-HTTP:
 
 ## Authentication & authorization
 
-- **Agent/Admin**: hand-rolled JWT (email/password), verified by `lambda-authorizer`, attached to each protected route individually (no route-prefix grouping).
+- **Agent/Admin**: hand-rolled JWT (email/password), verified by `lambda-authorizer`, attached to each protected route individually (no route-prefix grouping). `lambda-authorizer` attaches `{ userId, tenantId, role }` — all strings, field-for-field matching `TokenClaims` from `lib/auth.ts` — as `event.requestContext.authorizer.lambda` on the downstream request. Until `lambda-authorizer` itself is built, every JWT-protected Lambda's tests fabricate that context object directly rather than running real JWT verification (see "Auth in tests" below).
 - **Customer**: no account. `trackingToken` is a bearer capability for one Ticket, validated inside the handler itself — it never goes through the Authorizer, since it isn't a JWT and carries no claims to verify.
 - **Cross-tenant resource access**: any tenant-scoped lookup by ID (`get-ticket`, `claim-ticket`, `close-ticket`, `reply-to-ticket` Agent path, `mark-notification-read`) that resolves to a different tenant's row returns **404**, not 403 — indistinguishable from not existing, so a response never confirms a given ID belongs to *some* tenant.
+- **Same-tenant ownership**: `reply-to-ticket` Agent path additionally requires the caller to be the ticket's `assignedAgentId`. Unlike cross-tenant access, the ticket's existence within the caller's own tenant isn't secret (it's visible via `list-tickets`), so a wrong-Agent reply returns **403** (`NotAssignedAgentError`), not 404.
 
 ## Request/response contracts
 
@@ -60,7 +61,7 @@ Every transition enforces a **strict state guard**: a Lambda only accepts its on
 | Transition | Precondition | Actor |
 |---|---|---|
 | `Open` → `InProgress` | `status = Open` | Agent claims |
-| `InProgress` → `WaitingOnCustomer` | `status = InProgress` | Agent replies |
+| `InProgress` → `WaitingOnCustomer` | `status = InProgress`, caller is `assignedAgentId` | Agent replies |
 | `WaitingOnCustomer` → `InProgress` | `status = WaitingOnCustomer` | Customer replies |
 | `InProgress`/`WaitingOnCustomer` → `Closed` | not already `Closed` | Agent closes |
 
@@ -106,6 +107,17 @@ A Tenant created this way has zero `User`s ("unclaimed" — see `CONTEXT.md`) un
 
 The Customer's email for a Ticket lives on `Message.senderEmail` (nullable, set only on the Ticket's first/customer-authored Message) rather than as a `Ticket` column — anything needing "the Ticket's customer email" (e.g. `send-email-notification`) queries for the Ticket's first Message, not its latest customer Message, since `reply-to-ticket`'s Customer path never re-supplies it.
 
+## `reply-to-ticket` mechanics
+
+One Lambda backs both routes (see "API routes"), dispatching on whether `event.requestContext.authorizer.lambda` is populated (Agent path) or absent (Customer path, falls back to the `trackingToken` path param).
+
+- **Lookup**: the Agent path locks via `ticketRepository.findForUpdate(id, tenantId)` (see "Atomic update mechanism"). The Customer path has no `id`/`tenantId` in hand — only `trackingToken` — so it locks via a separate `ticketRepository.findForUpdateByTrackingToken(trackingToken)`. Both do their own `SELECT ... FOR UPDATE`.
+- **Service structure**: `reply-to-ticket-service.ts` exports `replyToTicketAsAgent()` and `replyToTicketAsCustomer()`, each resolving its own row and expected-status precondition, both calling a shared unexported `transitionAndReply()` that performs the lock-scoped write, `Message` creation, and event publish.
+- **Contract**: one shared `ReplyToTicketRequestSchema` (`{ body }`) covers the payload for both routes — path params (`trackingToken` or `id`) are parsed per-branch in the handler, not part of the Zod contract. One shared `ReplyToTicketResponseSchema` (`{ ticket, message }`), since the response shape is identical either way. Returns `201`.
+- **`senderEmail`**: never set on a reply-created Message, Agent or Customer path alike — only `create-ticket`'s first Message sets it (see "Tenant resolution for `create-ticket`" above).
+- **Event**: publishes `ticket.replied` with `{ ticketId, tenantId, senderType }`, reusing the existing `SenderType` enum so downstream consumers can filter by who authored the reply — `send-email-notification` acts on an Agent-authored (customer-facing) reply, `send-inapp-notification` acts on a Customer-authored (agent-facing) reply.
+- **Errors**: `TicketStatusConflictError` — `409`, constructed as `new TicketStatusConflictError(actual, expected)` where `expected: TicketStatus | TicketStatus[]`, message `` `Ticket status is ${actual}, expected ${expected}.` `` (or `expected one of ${expected.join(", ")}` for an array) — is the shared precondition-conflict error for every transition Lambda, not just this one. `NotAssignedAgentError` — `403` — is specific to the Agent path's ownership check.
+
 ## Jest integration test plan
 
 ### Test infrastructure
@@ -130,7 +142,7 @@ The Customer's email for a Ticket lives on `Message.senderEmail` (nullable, set 
 - `list-tickets` — tenant isolation: a second tenant's tickets never appear in the caller's results; status/assignment filters work
 - `get-ticket` — returns own-tenant ticket + messages; cross-tenant ticket ID → 404
 - `claim-ticket` — `Open`→`InProgress`, `assignedAgentId` set, SLA elapsed correctly accumulated up to claim time; two simultaneous claims on the same ticket → exactly one succeeds, the other 409s (direct test of the `SELECT ... FOR UPDATE` mechanism); claiming a non-`Open` ticket → 409
-- `reply-to-ticket` (Agent path) — `InProgress`→`WaitingOnCustomer`, Message(`agent`), `ticket.replied` published, SLA accumulation correct; wrong precondition state → 409
+- `reply-to-ticket` (Agent path) — `InProgress`→`WaitingOnCustomer`, Message(`agent`), `ticket.replied` published, SLA accumulation correct; wrong precondition state → 409; cross-tenant ticket ID → 404; replying Agent is not `assignedAgentId` → 403 (`NotAssignedAgentError`)
 - `reply-to-ticket` (Customer path) — `WaitingOnCustomer`→`InProgress`, Message(`customer`), `ticket.replied` published, SLA resumes; invalid `trackingToken` → 404; wrong precondition state (including `Closed`) → 409; concurrent Agent+Customer reply on the same ticket → lock correctness (second atomicity test)
 - `close-ticket` — any open state → `Closed`, SLA elapsed frozen from that point forward; already-`Closed` → 409
 

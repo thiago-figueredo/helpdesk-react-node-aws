@@ -1,18 +1,10 @@
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
 import { CreateTicketResponseSchema } from "@yourname/helpdesk-shared";
 import { setDown, setUp, testPrisma } from "../../test/db";
+import { buildEvent, uniqueTenantName } from "../../test/fixtures";
 import { mockAwsEventBridgeSDK } from "../../test/mock-event-bridge";
 import { createTicketHandler } from "./create-ticket-handler";
 
 const sendEventToAWS = mockAwsEventBridgeSDK();
-
-function buildEvent(body: unknown): APIGatewayProxyEventV2 {
-  return { body: JSON.stringify(body) } as APIGatewayProxyEventV2;
-}
-
-function uniqueTenantName(): string {
-  return `Acme Support ${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
 
 describe("create-ticket", () => {
   beforeAll(setUp);
